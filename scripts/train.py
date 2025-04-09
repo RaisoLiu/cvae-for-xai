@@ -3,6 +3,7 @@ import os
 import torch
 import random
 import numpy as np
+import re
 
 # Adjust import path based on project structure
 from models.cvae import VAE_Model
@@ -72,7 +73,7 @@ if __name__ == "__main__":
 
     # Paths and Directories
     parser.add_argument("--DR", type=str, default="./data/dummy_data", help="Root directory for the dataset")
-    parser.add_argument("--save_root", type=str, default="./output/experiment_1", help="Root directory to save logs, checkpoints, and demos")
+    parser.add_argument("--save_root", type=str, default=None, help="Root directory to save logs, checkpoints, and demos. Auto-detects next experiment number if not specified.")
     parser.add_argument("--ckpt_path", type=str, default=None, help="Path to checkpoint to resume training")
 
     # Model Hyperparameters
@@ -84,10 +85,10 @@ if __name__ == "__main__":
     # Training Settings
     parser.add_argument("--num_epoch", type=int, default=50, help="Total number of training epochs")
     parser.add_argument("--batch_size", type=int, default=4, help="Batch size for training")
-    parser.add_argument("--lr", type=float, default=1e-4, help="Learning rate")
-    parser.add_argument("--optim", type=str, default="AdamW", choices=["Adam", "AdamW"], help="Optimizer type")
-    parser.add_argument("--milestones", type=int, nargs='+', default=[10, 20, 30, 40], help="Epoch milestones for learning rate scheduler") # Example milestones
-    parser.add_argument("--gamma", type=float, default=0.5, help="Learning rate decay factor for scheduler")
+    parser.add_argument("--lr", type=float, default=1e-3, help="Learning rate")
+    parser.add_argument("--optim", type=str, default="Adam", choices=["Adam", "AdamW"], help="Optimizer type")
+    parser.add_argument("--milestones", type=int, nargs='+', default=[2, 4, 8, 16, 32], help="Epoch milestones for learning rate scheduler") # Example milestones
+    parser.add_argument("--gamma", type=float, default=0.316, help="Learning rate decay factor for scheduler")
     parser.add_argument("--per_save", type=int, default=5, help="Save checkpoint every N epochs")
     parser.add_argument("--seed", type=int, default=42, help="Random seed for reproducibility")
     parser.add_argument("--device", type=str, default="auto", choices=["auto", "cuda", "cpu"], help="Device to use for training")
@@ -98,7 +99,7 @@ if __name__ == "__main__":
 
     # KL Annealing Settings
     parser.add_argument("--kl_anneal_type", type=str, default="Cyclical", choices=["Cyclical", "Monotonic", "Without"], help="Type of KL annealing")
-    parser.add_argument("--kl_anneal_cycle", type=int, default=4, help="Number of cycles for Cyclical KL annealing")
+    parser.add_argument("--kl_anneal_cycle", type=int, default=10, help="Number of cycles for Cyclical KL annealing")
     parser.add_argument("--kl_anneal_ratio", type=float, default=0.5, help="Ratio of epoch to reach target beta for KL annealing")
 
     # Teacher Forcing Settings
@@ -121,6 +122,26 @@ if __name__ == "__main__":
 
 
     args = parser.parse_args()
+
+    # Auto-detect save_root if not provided
+    if args.save_root is None:
+        default_output_root = "./output"
+        os.makedirs(default_output_root, exist_ok=True)
+        max_exp_num = 0
+        try:
+            for item in os.listdir(default_output_root):
+                match = re.match(r"experiment_(\d+)", item)
+                if match and os.path.isdir(os.path.join(default_output_root, item)):
+                    exp_num = int(match.group(1))
+                    if exp_num > max_exp_num:
+                        max_exp_num = exp_num
+        except FileNotFoundError:
+            pass # No existing experiments
+
+        next_exp_num = max_exp_num + 1
+        args.save_root = os.path.join(default_output_root, f"experiment_{next_exp_num}")
+        print(f"--save_root not specified, automatically using: {args.save_root}")
+
 
     # Create save_root directory if it doesn't exist
     os.makedirs(args.save_root, exist_ok=True)

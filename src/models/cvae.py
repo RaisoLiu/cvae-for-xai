@@ -1,6 +1,7 @@
 import gc
 import os
 import random
+import csv
 
 import numpy as np
 import torch
@@ -12,6 +13,9 @@ from torch.utils import tensorboard
 from torch.utils.data import DataLoader
 from torchvision import transforms
 from tqdm import tqdm
+import matplotlib
+matplotlib.use('Agg')
+import matplotlib.pyplot as plt
 
 # Adjust imports based on the new structure
 from data.dataloader import get_dataloader # Removed src. prefix
@@ -220,8 +224,11 @@ class VAE_Model(nn.Module):
         print(f"[Debug] eval: Calculated mean_psnr: {mean_psnr:.4f}")
         # --- End Debug --- #
 
+        # Check if current PSNR is the best
+        is_best = mean_psnr > self.best_psnr
+
         # Save GIF periodically or if it's the best model
-        should_save_gif = (self.current_epoch % self.args.per_save == 0) or (mean_psnr > self.best_psnr)
+        should_save_gif = (self.current_epoch % self.args.per_save == 0) or is_best
         if len(save_imgs) > 0 and should_save_gif:
             save_path = os.path.join(val_demo_dir, f"val_demo_epoch_{self.current_epoch}_psnr_{mean_psnr:.2f}.gif")
             try:
@@ -233,6 +240,43 @@ class VAE_Model(nn.Module):
                 if save_imgs:
                     print(f"First frame type: {type(save_imgs[0])}, shape: {save_imgs[0].shape if hasattr(save_imgs[0], 'shape') else 'N/A'}")
 
+        # Plot PSNR list and save data if it's the best model
+        if is_best and PSNRS:
+            base_filename = f"epoch_{self.current_epoch}_psnr_{mean_psnr:.2f}"
+            plot_save_path_png = os.path.join(val_demo_dir, f"psnr_plot_{base_filename}.png")
+            plot_save_path_eps = os.path.join(val_demo_dir, f"psnr_plot_{base_filename}.eps")
+            data_save_path_csv = os.path.join(val_demo_dir, f"psnr_data_{base_filename}.csv")
+
+            # Plotting
+            try:
+                fig, ax = plt.subplots(figsize=(10, 5))
+                frame_indices = list(range(len(PSNRS)))
+                ax.plot(frame_indices, PSNRS, marker='.', linestyle='-')
+                ax.set_title(f'PSNR per Frame - Epoch {self.current_epoch} (Mean PSNR: {mean_psnr:.2f} dB)')
+                ax.set_xlabel('Frame Index')
+                ax.set_ylabel('PSNR (dB)')
+                ax.grid(True)
+
+                # Save plot in PNG and EPS formats
+                fig.savefig(plot_save_path_png)
+                print(f"Saved PSNR plot to {plot_save_path_png}")
+                fig.savefig(plot_save_path_eps, format='eps')
+                print(f"Saved PSNR plot to {plot_save_path_eps}")
+
+                plt.close(fig) # Close the figure to free memory
+            except Exception as e:
+                print(f"Error saving PSNR plot: {e}")
+
+            # Save PSNR data to CSV
+            try:
+                with open(data_save_path_csv, 'w', newline='') as csvfile:
+                    writer = csv.writer(csvfile)
+                    writer.writerow(['Frame Index', 'PSNR']) # Write header
+                    for index, psnr_value in enumerate(PSNRS):
+                        writer.writerow([index, psnr_value])
+                print(f"Saved PSNR data to {data_save_path_csv}")
+            except Exception as e:
+                print(f"Error saving PSNR data to CSV: {e}")
 
         return mean_val_loss, mean_psnr
 
