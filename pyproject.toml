@@ -1,0 +1,44 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "cvae-for-xai"
+version = "0.1.0"
+description = "Conditional Variational Autoencoder for Explainable AI applications."
+readme = "README.md"
+requires-python = ">=3.9" # Specify a reasonable minimum Python version
+license = {text = "MIT"} # Example license, change if needed
+authors = [
+  { name="Your Name", email="your.email@example.com" }, # Replace with your details
+]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "License :: OSI Approved :: MIT License", # Match the license text
+    "Operating System :: OS Independent",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+dependencies = [
+    # Core deep learning libraries
+    "torch",
+    "torchvision",
+    # Data handling and numerical operations
+    "numpy",
+    "pandas",
+    # Image processing
+    "Pillow",
+    # Progress bar
+    "tqdm",
+    # Optional: Add other direct dependencies here if needed
+    # e.g., "PyYAML" if config files are used
+    # "imageio" if needed for GIF creation beyond Pillow
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest", # Example for testing
+    # Add other development tools like linters, formatters if desired
+]
+
+[tool.setuptools.packages.find]
+where = ["src"] # Look for packages in the src directory
