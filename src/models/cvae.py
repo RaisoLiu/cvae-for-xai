@@ -136,7 +136,7 @@ class VAE_Model(nn.Module):
 
                 tf_status = "ON" if adapt_TeacherForcing else "OFF"
                 self.tqdm_bar(
-                    f"train [TF: {tf_status}, {self.tfr:.1f}], beta: {beta:.4f}",
+                    f"train [TF: {tf_status}, {self.tfr:.1f}], beta: {beta:.2f}",
                     pbar,
                     loss.item(),
                     lr=self.scheduler.get_last_lr()[0],
@@ -217,19 +217,19 @@ class VAE_Model(nn.Module):
         mean_psnr = np.mean([p for p in PSNRS if not np.isnan(p)]) if PSNRS else 0.0
 
         # --- Debug PSNR --- #
-        if len(PSNRS) > 10:
-            print(f"[Debug] eval: Final PSNRS list sample (first 5): {PSNRS[:5]}, (last 5): {PSNRS[-5:]} (len: {len(PSNRS)})")
-        else:
-            print(f"[Debug] eval: Final PSNRS list sample: {PSNRS} (len: {len(PSNRS)})") # Print all if less than 10
-        print(f"[Debug] eval: Calculated mean_psnr: {mean_psnr:.4f}")
+        # if len(PSNRS) > 10:
+        #     print(f"[Debug] eval: Final PSNRS list sample (first 5): {PSNRS[:5]}, (last 5): {PSNRS[-5:]} (len: {len(PSNRS)})")
+        # else:
+        #     print(f"[Debug] eval: Final PSNRS list sample: {PSNRS} (len: {len(PSNRS)})") # Print all if less than 10
+        # print(f"[Debug] eval: Calculated mean_psnr: {mean_psnr:.4f}")
         # --- End Debug --- #
 
         # Check if current PSNR is the best
         is_best = mean_psnr > self.best_psnr
 
         # Save GIF periodically or if it's the best model
-        should_save_gif = (self.current_epoch % self.args.per_save == 0) or is_best
-        if len(save_imgs) > 0 and should_save_gif:
+        should_save = (self.current_epoch % self.args.per_save == 0) or is_best
+        if len(save_imgs) > 0 and should_save:
             save_path = os.path.join(val_demo_dir, f"val_demo_epoch_{self.current_epoch}_psnr_{mean_psnr:.2f}.gif")
             try:
                 self.make_gif(save_imgs, save_path)
@@ -241,7 +241,7 @@ class VAE_Model(nn.Module):
                     print(f"First frame type: {type(save_imgs[0])}, shape: {save_imgs[0].shape if hasattr(save_imgs[0], 'shape') else 'N/A'}")
 
         # Plot PSNR list and save data if it's the best model
-        if is_best and PSNRS:
+        if is_best and PSNRS or should_save:
             base_filename = f"epoch_{self.current_epoch}_psnr_{mean_psnr:.2f}"
             plot_save_path_png = os.path.join(val_demo_dir, f"psnr_plot_{base_filename}.png")
             plot_save_path_eps = os.path.join(val_demo_dir, f"psnr_plot_{base_filename}.eps")
@@ -285,71 +285,131 @@ class VAE_Model(nn.Module):
         f_dim, l_dim, n_dim = self.args.F_dim, self.args.L_dim, self.args.N_dim
         beta = self.kl_annealing.get_beta()
 
+        # --- Freeze specific modules ---
+        # modules_to_freeze = [self.frame_transformation, self.label_transformation]
+        modules_to_freeze = []
+        original_requires_grad = {}
+        params_to_unfreeze = [] # Keep track of params we actually froze
+        if self.debug: print("[Debug noTF] Freezing modules...")
+        for i, module in enumerate(modules_to_freeze):
+            module_name = module.__class__.__name__
+            if self.debug: print(f"[Debug noTF]  - Module {i}: {module_name}")
+            for name, param in module.named_parameters():
+                key = f"{module_name}_{name}"
+                original_requires_grad[key] = param.requires_grad
+                if param.requires_grad: # Only freeze if it requires grad
+                     param.requires_grad_(False)
+                     params_to_unfreeze.append((module, name, key)) # Store info needed to unfreeze
+                     if self.debug: print(f"[Debug noTF]    - Froze param: {name}")
+                # else:
+                #     if self.debug: print(f"[Debug noTF]    - Param already frozen: {name}")
+        if self.debug: print(f"[Debug noTF] Freezing done. Froze {len(params_to_unfreeze)} parameters.")
+        # --- End Freeze ---
+
         self.optim.zero_grad()
 
-        with autocast(device_type='cuda', dtype=torch.float16, enabled=self.use_amp):
-            # Process labels once
-            no_head_label = label[:, 1:].reshape(-1, channel, height, width)
-            no_head_label_emb = self.label_transformation(no_head_label).view(
-                batch_size, time_step - 1, l_dim, height, width
-            )
+        try: # Use try-finally to ensure requires_grad is restored
+            with autocast(device_type='cuda', dtype=torch.float16, enabled=self.use_amp):
+                # Process labels once
+                no_head_label = label[:, 1:].reshape(-1, channel, height, width)
+                no_head_label_emb = self.label_transformation(no_head_label).view(
+                    batch_size, time_step - 1, l_dim, height, width
+                )
 
-            # Initialize previous frame and latent variable
-            prev_frame = img[:, 0] # Shape: (batch_size, channel, height, width)
-            prev_frame_emb = self.frame_transformation(prev_frame) # Shape: (batch_size, f_dim, height, width)
-            prev_z = torch.randn(batch_size, n_dim, height, width, device=self.args.device)
+                # Initialize previous frame and latent variable
+                prev_frame = img[:, 0] # Shape: (batch_size, channel, height, width)
+                # Forward pass through potentially frozen frame_transformation
+                prev_frame_emb = self.frame_transformation(prev_frame) # Shape: (batch_size, f_dim, height, width)
+                prev_z = torch.randn(batch_size, n_dim, height, width, device=self.args.device)
 
-            pred_no_head_img_list, mu_list, logvar_list = [], [], []
-            total_mse = 0.0
-            total_kld = 0.0
+                pred_no_head_img_list, mu_list, logvar_list = [], [], []
+                total_mse = 0.0
+                total_kld = 0.0
 
-            for i in range(time_step - 1):
-                current_label_emb = no_head_label_emb[:, i] # Shape: (batch_size, l_dim, height, width)
+                for i in range(time_step - 1):
+                    current_label_emb = no_head_label_emb[:, i] # Shape: (batch_size, l_dim, height, width)
 
-                # Decode step
-                decoded_features = self.Decoder_Fusion(prev_frame_emb, current_label_emb, prev_z)
-                img_hat = self.Generator(decoded_features) # Shape: (batch_size, channel, height, width)
-                pred_no_head_img_list.append(img_hat)
+                    # Decode step (Decoder_Fusion and Generator are NOT frozen)
+                    decoded_features = self.Decoder_Fusion(prev_frame_emb, current_label_emb, prev_z)
+                    img_hat = self.Generator(decoded_features) # Shape: (batch_size, channel, height, width)
+                    pred_no_head_img_list.append(img_hat)
 
-                # Calculate MSE for this step
-                target_frame = img[:, i + 1]
-                mse_step = self.mse_criterion(img_hat, target_frame)
-                total_mse += mse_step
+                    # Calculate MSE for this step
+                    target_frame = img[:, i + 1]
+                    mse_step = self.mse_criterion(img_hat, target_frame)
+                    total_mse += mse_step
 
-                # Encode the generated frame for the next step
-                prev_frame_emb = self.frame_transformation(img_hat)
+                    # Encode the generated frame for the next step
+                    # Forward pass through potentially frozen frame_transformation
+                    prev_frame_emb = self.frame_transformation(img_hat)
 
-                # Predict latent variables for the next step
-                z, mu, logvar = self.Gaussian_Predictor(prev_frame_emb, current_label_emb)
-                prev_z = z # Use the predicted z for the next step's input
-                mu_list.append(mu)
-                logvar_list.append(logvar)
+                    # Predict latent variables for the next step
+                    # Forward pass through potentially frozen Gaussian_Predictor
+                    z, mu, logvar = self.Gaussian_Predictor(prev_frame_emb, current_label_emb)
+                    prev_z = z # Use the predicted z for the next step's input
+                    mu_list.append(mu)
+                    logvar_list.append(logvar)
 
-                # Calculate KLD for this step
-                kld_step = self.kl_criterion(mu, logvar)
-                total_kld += kld_step
+                    # Calculate KLD for this step (Gradients won't flow back to Gaussian_Predictor if frozen)
+                    kld_step = self.kl_criterion(mu, logvar)
+                    total_kld += kld_step
 
-            # Average losses over the sequence length
-            mean_mse = total_mse / (time_step - 1)
-            mean_kld = total_kld / (time_step - 1)
+                # Average losses over the sequence length
+                mean_mse = total_mse / (time_step - 1)
+                mean_kld = total_kld / (time_step - 1)
 
-            # Check for NaN/Inf before calculating total loss
-            if torch.isnan(mean_mse) or torch.isinf(mean_mse) or torch.isnan(mean_kld) or torch.isinf(mean_kld):
-                print(f"Warning: NaN/Inf detected in losses (no TF) - mse: {mean_mse.item()}, kld: {mean_kld.item()}")
-                return torch.tensor(float('nan'), device=self.args.device, requires_grad=True) # Return NaN to skip step
+                # Check for NaN/Inf before calculating total loss
+                if torch.isnan(mean_mse) or torch.isinf(mean_mse) or torch.isnan(mean_kld) or torch.isinf(mean_kld):
+                    print(f"Warning: NaN/Inf detected in losses (no TF) - mse: {mean_mse.item()}, kld: {mean_kld.item()}")
+                    return torch.tensor(float('nan'), device=self.args.device, requires_grad=True) # Return NaN to skip step
 
-            loss = mean_mse + beta * mean_kld
+                loss = mean_mse + beta * mean_kld
 
-        if self.scaler:
-            self.scaler.scale(loss).backward()
-            self.scaler.unscale_(self.optim) # Unscale before clipping
-            torch.nn.utils.clip_grad_norm_(self.parameters(), 1.0)
-            self.scaler.step(self.optim)
-            self.scaler.update()
-        else:
-            loss.backward()
-            torch.nn.utils.clip_grad_norm_(self.parameters(), 1.0)
-            self.optim.step()
+            # --- Backward and Optimization ---
+            # Gradients will only be computed for non-frozen parameters
+            if self.scaler:
+                self.scaler.scale(loss).backward()
+                # Optional: Check gradients of frozen modules (should be None or zero)
+                if self.debug:
+                    for module in modules_to_freeze:
+                        for name, param in module.named_parameters():
+                            if param.grad is not None:
+                                print(f"[Debug noTF Warning] Grad is not None for frozen param {module.__class__.__name__}_{name}: {param.grad.abs().sum().item()}")
+                self.scaler.unscale_(self.optim) # Unscale before clipping
+                # Clip gradients only for parameters that require grad (implicitly handles frozen ones)
+                torch.nn.utils.clip_grad_norm_([p for p in self.parameters() if p.requires_grad], 1.0)
+                self.scaler.step(self.optim) # Optimizer updates only non-frozen params
+                self.scaler.update()
+            else:
+                loss.backward()
+                # Optional: Check gradients of frozen modules
+                if self.debug:
+                     for module in modules_to_freeze:
+                         for name, param in module.named_parameters():
+                             if param.grad is not None:
+                                 print(f"[Debug noTF Warning] Grad is not None for frozen param {module.__class__.__name__}_{name}: {param.grad.abs().sum().item()}")
+                # Clip gradients only for parameters that require grad
+                torch.nn.utils.clip_grad_norm_([p for p in self.parameters() if p.requires_grad], 1.0)
+                self.optim.step() # Optimizer updates only non-frozen params
+
+        finally:
+            # --- Unfreeze modules ---
+            if self.debug: print("[Debug noTF] Unfreezing modules...")
+            restored_count = 0
+            # Iterate through the list of parameters that were actually frozen
+            for module, name, key in params_to_unfreeze:
+                 try:
+                     # Find the parameter again (safer than assuming it still exists in the dict)
+                     param = dict(module.named_parameters())[name]
+                     # Restore its original requires_grad state
+                     param.requires_grad_(original_requires_grad[key])
+                     restored_count += 1
+                     # if self.debug: print(f"[Debug noTF]   - Restored grad for param: {name} to {original_requires_grad[key]}")
+                 except KeyError:
+                     # This might happen if the model structure changed unexpectedly, unlikely
+                     print(f"[Debug noTF Warning] Could not find parameter {name} in module {module.__class__.__name__} during unfreeze.")
+            if self.debug: print(f"[Debug noTF] Unfreezing done. Restored requires_grad for {restored_count} parameters.")
+            # --- End Unfreeze ---
 
         # Log step losses (optional, can be verbose)
         # self.writer.add_scalar("StepLoss/mse_noTF", mean_mse.item(), self.global_step) # Requires global step tracking
@@ -463,8 +523,8 @@ class VAE_Model(nn.Module):
                 target_frame = img[:, i + 1]
                 current_psnr = Generate_PSNR(img_hat_clamped, target_frame)
                 # --- Debug PSNR Calculation --- #
-                if i < 3: # Print for first few frames
-                    print(f"[Debug Frame {i+1}] Target min/max: {target_frame.min():.3f}/{target_frame.max():.3f}, Pred min/max: {img_hat_clamped.min():.3f}/{img_hat_clamped.max():.3f}, PSNR: {current_psnr.item():.4f}")
+                # if i < 3: # Print for first few frames
+                #     print(f"[Debug Frame {i+1}] Target min/max: {target_frame.min():.3f}/{target_frame.max():.3f}, Pred min/max: {img_hat_clamped.min():.3f}/{img_hat_clamped.max():.3f}, PSNR: {current_psnr.item():.4f}")
                 # --- End Debug ---
                 if not torch.isnan(current_psnr):
                     psnr_list.append(current_psnr.item())
@@ -501,10 +561,10 @@ class VAE_Model(nn.Module):
         self.writer.add_scalar("mse/val", mse.item(), self.current_epoch)
 
         # --- Debug PSNR --- #
-        if not psnr_list:
-            print("[Debug] val_one_step: psnr_list is empty!")
-        else:
-            print(f"[Debug] val_one_step: psnr_list sample: {psnr_list[:5]} (len: {len(psnr_list)})")
+        # if not psnr_list:
+        #     print("[Debug] val_one_step: psnr_list is empty!")
+        # else:
+        #     print(f"[Debug] val_one_step: psnr_list sample: {psnr_list[:5]} (len: {len(psnr_list)})")
         # --- End Debug --- #
 
         return loss, psnr_list, generated_frames # Return list of PSNRs per frame
@@ -558,10 +618,10 @@ class VAE_Model(nn.Module):
         # Force num_workers=0 for validation to debug potential multiprocessing issues
         args_copy = self.args
         original_num_workers = getattr(args_copy, 'num_workers', 4)
-        args_copy.num_workers = 0 # Temporarily set workers to 0 for validation
-        print(f"[Debug] Forcing num_workers=0 for validation dataloader (original was {original_num_workers}).")
+        # args_copy.num_workers = 0 # Temporarily set workers to 0 for validation
+        # print(f"[Debug] Forcing num_workers=0 for validation dataloader (original was {original_num_workers}).")
         loader = get_dataloader(args_copy, "val", self.val_vi_len, 1.0, batch_size=1) # Val typically uses batch_size=1
-        args_copy.num_workers = original_num_workers # Restore original value (important if args object is shared)
+        # args_copy.num_workers = original_num_workers # Restore original value (important if args object is shared)
         return loader
 
     def teacher_forcing_ratio_update(self):
@@ -599,36 +659,55 @@ class VAE_Model(nn.Module):
         except Exception as e:
             print(f"Error saving checkpoint to {path}: {e}")
 
-    def load_checkpoint(self, ckpt_path=None):
+    def load_checkpoint(self, ckpt_path=None, load_full_state=True):
         load_path = ckpt_path if ckpt_path else self.args.ckpt_path
         if load_path and os.path.isfile(load_path):
             try:
                 print(f"Loading checkpoint from {load_path}")
-                checkpoint = torch.load(load_path, map_location=self.args.device)
+                # Explicitly set weights_only=False to load older checkpoints with pickled data
+                checkpoint = torch.load(load_path, map_location=self.args.device, weights_only=False)
 
                 # Load model state
                 self.load_state_dict(checkpoint["state_dict"])
+                print("Model state_dict loaded.")
 
-                # Load optimizer and scheduler states
-                if "optimizer_state_dict" in checkpoint:
-                    self.optim.load_state_dict(checkpoint["optimizer_state_dict"])
-                if "scheduler_state_dict" in checkpoint:
-                    self.scheduler.load_state_dict(checkpoint["scheduler_state_dict"])
+                if load_full_state:
+                    # Load optimizer and scheduler states
+                    if "optimizer_state_dict" in checkpoint:
+                        self.optim.load_state_dict(checkpoint["optimizer_state_dict"])
+                        print("Optimizer state loaded.")
+                    else:
+                        print("Warning: Optimizer state not found in checkpoint.")
+                    if "scheduler_state_dict" in checkpoint:
+                        self.scheduler.load_state_dict(checkpoint["scheduler_state_dict"])
+                        print("Scheduler state loaded.")
+                    else:
+                        print("Warning: Scheduler state not found in checkpoint.")
 
-                # Load KL annealing state
-                if "kl_annealing_state" in checkpoint:
-                    self.kl_annealing.__dict__.update(checkpoint["kl_annealing_state"])
+                    # Load KL annealing state
+                    if "kl_annealing_state" in checkpoint:
+                        self.kl_annealing.__dict__.update(checkpoint["kl_annealing_state"])
+                        print("KL annealing state loaded.")
+                    else:
+                        print("Warning: KL annealing state not found in checkpoint.")
 
-                # Load training progress state
-                self.current_epoch = checkpoint.get("current_epoch", 1)
-                self.tfr = checkpoint.get("tfr", self.args.tfr)
-                self.best_psnr = checkpoint.get("best_psnr", 0.0)
+                    # Load training progress state
+                    self.current_epoch = checkpoint.get("current_epoch", 1)
+                    self.tfr = checkpoint.get("tfr", self.args.tfr)
+                    self.best_psnr = checkpoint.get("best_psnr", 0.0)
+                    print(f"Training state loaded. Resuming from epoch {self.current_epoch}, TFR {self.tfr:.4f}, Best PSNR {self.best_psnr:.4f}")
 
-                # Load AMP scaler state
-                if self.scaler and "scaler_state_dict" in checkpoint and checkpoint["scaler_state_dict"] is not None:
-                    self.scaler.load_state_dict(checkpoint["scaler_state_dict"])
+                    # Load AMP scaler state
+                    if self.scaler and "scaler_state_dict" in checkpoint and checkpoint["scaler_state_dict"] is not None:
+                        self.scaler.load_state_dict(checkpoint["scaler_state_dict"])
+                        print("AMP scaler state loaded.")
+                    elif self.scaler:
+                        print("Warning: AMP scaler state not found or is None in checkpoint.")
 
-                print(f"Checkpoint loaded. Resuming from epoch {self.current_epoch}, TFR {self.tfr:.4f}, Best PSNR {self.best_psnr:.4f}")
+                else:
+                    # Only model weights were loaded
+                    print("Only model weights loaded. Training state (epoch, optimizer, etc.) reset.")
+                    self.current_epoch = 1 # Start from epoch 1 when only loading weights
 
             except Exception as e:
                 print(f"Error loading checkpoint from {load_path}: {e}")

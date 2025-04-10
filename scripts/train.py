@@ -37,14 +37,16 @@ def main(args):
     # --- Model Initialization ---
     print("Initializing model...")
     model = VAE_Model(args).to(args.device)
-    print(model)
+    # print(model)
     # Print number of parameters (optional)
     num_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
     print(f"Number of trainable parameters: {num_params / 1e6:.2f} M")
 
     # --- Checkpoint Loading ---
     if args.ckpt_path:
-        model.load_checkpoint(args.ckpt_path)
+        # Check if we are resuming or just loading weights
+        load_full = getattr(args, 'is_resuming', False)
+        model.load_checkpoint(args.ckpt_path, load_full_state=load_full)
     else:
         print("No checkpoint path provided, starting training from scratch.")
 
@@ -77,22 +79,22 @@ if __name__ == "__main__":
     parser.add_argument("--ckpt_path", type=str, default=None, help="Path to checkpoint to resume training")
 
     # Model Hyperparameters
-    parser.add_argument("--F_dim", type=int, default=24, help="Dimension of frame features")
-    parser.add_argument("--L_dim", type=int, default=24, help="Dimension of label features")
-    parser.add_argument("--N_dim", type=int, default=48, help="Dimension of latent variables (z)")
-    parser.add_argument("--D_out_dim", type=int, default=96, help="Output dimension of Decoder Fusion module")
+    parser.add_argument("--F_dim", type=int, default=128, help="Dimension of frame features")
+    parser.add_argument("--L_dim", type=int, default=32, help="Dimension of label features")
+    parser.add_argument("--N_dim", type=int, default=12, help="Dimension of latent variables (z)")
+    parser.add_argument("--D_out_dim", type=int, default=192, help="Output dimension of Decoder Fusion module")
 
     # Training Settings
-    parser.add_argument("--num_epoch", type=int, default=50, help="Total number of training epochs")
+    parser.add_argument("--num_epoch", type=int, default=100, help="Total number of training epochs")
     parser.add_argument("--batch_size", type=int, default=4, help="Batch size for training")
     parser.add_argument("--lr", type=float, default=1e-3, help="Learning rate")
     parser.add_argument("--optim", type=str, default="Adam", choices=["Adam", "AdamW"], help="Optimizer type")
-    parser.add_argument("--milestones", type=int, nargs='+', default=[2, 4, 8, 16, 32], help="Epoch milestones for learning rate scheduler") # Example milestones
+    parser.add_argument("--milestones", type=int, nargs='+', default=[2, 4, 8, 16], help="Epoch milestones for learning rate scheduler") # Example milestones
     parser.add_argument("--gamma", type=float, default=0.316, help="Learning rate decay factor for scheduler")
     parser.add_argument("--per_save", type=int, default=5, help="Save checkpoint every N epochs")
     parser.add_argument("--seed", type=int, default=42, help="Random seed for reproducibility")
     parser.add_argument("--device", type=str, default="auto", choices=["auto", "cuda", "cpu"], help="Device to use for training")
-    parser.add_argument("--num_workers", type=int, default=4, help="Number of workers for dataloader")
+    parser.add_argument("--num_workers", type=int, default=15, help="Number of workers for dataloader")
     parser.add_argument("--no_use_amp", action='store_true', help="Disable Automatic Mixed Precision (AMP)")
     parser.add_argument("--debug", action='store_true', help="Enable debug prints in the model")
 
@@ -111,7 +113,7 @@ if __name__ == "__main__":
     # Data Settings
     parser.add_argument("--train_vi_len", type=int, default=16, help="Length of video sequences for training")
     parser.add_argument("--val_vi_len", type=int, default=630, help="Length of video sequences for validation")
-    parser.add_argument("--frame_H", type=int, default=64, help="Frame height")
+    parser.add_argument("--frame_H", type=int, default=32, help="Frame height")
     parser.add_argument("--frame_W", type=int, default=64, help="Frame width")
     parser.add_argument("--use_random_crop", action='store_true', help="Use random resized crop for training augmentation")
     parser.add_argument("--partial", type=float, default=1.0, help="Use a partial dataset (fraction from 0.0 to 1.0)")

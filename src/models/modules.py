@@ -104,5 +104,6 @@ class Decoder_Fusion(nn.Sequential):
         )
 
     def forward(self, img, label, parm):
+        # print(f"[Debug Fusion Input] img shape: {img.shape}, label shape: {label.shape}, parm shape: {parm.shape}")
         feature = torch.cat([img, label, parm], dim=1)
         return super().forward(feature) 
