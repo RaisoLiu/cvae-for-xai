@@ -217,11 +217,11 @@ class VAE_Model(nn.Module):
         mean_psnr = np.mean([p for p in PSNRS if not np.isnan(p)]) if PSNRS else 0.0
 
         # --- Debug PSNR --- #
-        # if len(PSNRS) > 10:
-        #     print(f"[Debug] eval: Final PSNRS list sample (first 5): {PSNRS[:5]}, (last 5): {PSNRS[-5:]} (len: {len(PSNRS)})")
-        # else:
-        #     print(f"[Debug] eval: Final PSNRS list sample: {PSNRS} (len: {len(PSNRS)})") # Print all if less than 10
-        # print(f"[Debug] eval: Calculated mean_psnr: {mean_psnr:.4f}")
+        if len(PSNRS) > 10:
+            print(f"[Debug] eval: Final PSNRS list sample (first 5): {PSNRS[:5]}, (last 5): {PSNRS[-5:]} (len: {len(PSNRS)})")
+        else:
+            print(f"[Debug] eval: Final PSNRS list sample: {PSNRS} (len: {len(PSNRS)})") # Print all if less than 10
+        print(f"[Debug] eval: Calculated mean_psnr: {mean_psnr:.4f}")
         # --- End Debug --- #
 
         # Check if current PSNR is the best
@@ -332,16 +332,17 @@ class VAE_Model(nn.Module):
                     # Decode step (Decoder_Fusion and Generator are NOT frozen)
                     decoded_features = self.Decoder_Fusion(prev_frame_emb, current_label_emb, prev_z)
                     img_hat = self.Generator(decoded_features) # Shape: (batch_size, channel, height, width)
-                    pred_no_head_img_list.append(img_hat)
+                    img_hat_clamped = torch.clamp(img_hat, 0.0, 1.0) # Clamp the output
+                    pred_no_head_img_list.append(img_hat_clamped)
 
                     # Calculate MSE for this step
                     target_frame = img[:, i + 1]
-                    mse_step = self.mse_criterion(img_hat, target_frame)
+                    mse_step = self.mse_criterion(img_hat_clamped, target_frame) # Use clamped image for MSE
                     total_mse += mse_step
 
                     # Encode the generated frame for the next step
                     # Forward pass through potentially frozen frame_transformation
-                    prev_frame_emb = self.frame_transformation(img_hat)
+                    prev_frame_emb = self.frame_transformation(img_hat) # Use unclamped image for next step encoding
 
                     # Predict latent variables for the next step
                     # Forward pass through potentially frozen Gaussian_Predictor
@@ -444,10 +445,11 @@ class VAE_Model(nn.Module):
             # Decode using previous frame embedding (no_tail_frame_emb)
             decoded_features = self.Decoder_Fusion(no_tail_frame_emb, no_head_label_emb, z)
             img_hat = self.Generator(decoded_features) # Shape: (batch*(t-1), c, h, w)
+            img_hat_clamped = torch.clamp(img_hat, 0.0, 1.0) # Clamp the output
 
             # Calculate MSE Loss
             target_img = img[:, 1:].reshape(-1, channel, height, width)
-            mse = self.mse_criterion(img_hat, target_img)
+            mse = self.mse_criterion(img_hat_clamped, target_img) # Use clamped image for MSE
 
             # Calculate KL Divergence Loss
             kld = self.kl_criterion(mu, logvar)
@@ -504,7 +506,7 @@ class VAE_Model(nn.Module):
 
             # Add the first frame (label + ground truth) to the GIF list (only for the first item in batch)
             if batch_size == 1:
-                first_frame_display = torch.cat([label[0, 0].float(), prev_frame[0].float()], dim=1) # Stack vertically
+                first_frame_display = torch.cat([label[0, 0].float(), prev_frame[0].float()], dim=2) # Stack horizontally
                 generated_frames.append(torch.clamp(first_frame_display, 0.0, 1.0))
 
             total_mse = 0.0
@@ -531,7 +533,7 @@ class VAE_Model(nn.Module):
 
                 # Add combined frame (label + prediction) to GIF list (only for the first item in batch)
                 if batch_size == 1:
-                   combined_frame_display = torch.cat([label[0, i + 1].float(), img_hat_clamped[0].float()], dim=1) # Stack vertically
+                   combined_frame_display = torch.cat([label[0, i + 1].float(), img_hat_clamped[0].float()], dim=2) # Stack horizontally
                    generated_frames.append(combined_frame_display)
 
                 # Prepare for next step: Encode generated frame and predict next z
@@ -593,7 +595,7 @@ class VAE_Model(nn.Module):
                 format="GIF",
                 append_images=pil_images[1:],
                 save_all=True,
-                duration=100, # Adjust duration as needed (milliseconds per frame)
+                duration=60, # Adjust duration as needed (milliseconds per frame)
                 loop=0, # Loop indefinitely
             )
         except Exception as e:

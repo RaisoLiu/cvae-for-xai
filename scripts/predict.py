@@ -233,11 +233,11 @@ class Test_model(VAE_Model):
                 # Add combined frame (label + prediction) to GIF list
                 if self.args.make_gif:
                     # Squeeze img_hat for concatenation
-                    combined_frame_display = torch.cat([current_label.float(), img_hat.squeeze(0).float()], dim=2)
+                    combined_frame_display = torch.cat([current_label.float(), img_hat_clamped.float()], dim=2) # Use clamped image
                     generated_frames_for_gif.append(combined_frame_display)
 
                 # Prepare for next step: Encode generated frame and predict next z
-                prev_frame_emb = self.frame_transformation(img_hat) # Keep batch dim. Shape [1, F_dim, H, W]
+                prev_frame_emb = self.frame_transformation(img_hat) # Keep batch dim. Shape [1, F_dim, H, W]. Use unclamped for next step encoding.
                 # Need to add batch dim for Gaussian Predictor's other input
                 z, _, _ = self.Gaussian_Predictor(prev_frame_emb, current_label_emb.unsqueeze(0))
                 prev_z = z.squeeze(0) # Remove batch dim for next iteration's loop logic
